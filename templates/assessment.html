@@ -19,12 +19,24 @@
         <label>Farmer / Cooperative ID</label>
         <input name="farmer_id" value="FARM-NRK-0192" required>
       </div>
-      <div class="row">
-        <div class="field"><label>Latitude</label>
-          <input name="latitude" type="number" step="any" value="-0.3031" required></div>
-        <div class="field"><label>Longitude</label>
-          <input name="longitude" type="number" step="any" value="36.0662" required></div>
+      <div class="field">
+        <label>Town / Location</label>
+        <input name="location" list="location-list" value="Nakuru"
+               placeholder="e.g. Narok, Garissa, Kisumu" autocomplete="off">
+        <datalist id="location-list"></datalist>
+        <span class="muted" id="geo-hint">We geocode the town to GPS automatically.</span>
       </div>
+      <details style="margin-bottom:16px">
+        <summary style="cursor:pointer;font-size:13px;color:var(--green-700);font-weight:600">
+          Advanced · enter exact coordinates</summary>
+        <div class="row" style="margin-top:12px">
+          <div class="field" style="margin-bottom:0"><label>Latitude</label>
+            <input name="latitude" type="number" step="any" placeholder="optional"></div>
+          <div class="field" style="margin-bottom:0"><label>Longitude</label>
+            <input name="longitude" type="number" step="any" placeholder="optional"></div>
+        </div>
+        <span class="muted">If set, coordinates override the town lookup.</span>
+      </details>
       <div class="field">
         <label>Monthly Co-op Revenue (KSh)</label>
         <input name="monthly_coop_revenue_ksh" type="number" step="any" value="45000" required>
@@ -73,7 +85,7 @@
   <!-- ----------------------------- Map panel ----------------------------- -->
   <div class="card">
     <h3>Geolocation</h3>
-    <p class="muted">CHIRPS / MODIS sampling point</p>
+    <p class="muted" id="geo-resolved">CHIRPS / MODIS sampling point</p>
     <div id="map"></div>
   </div>
 </div>
@@ -165,21 +177,41 @@ function render(d) {
   document.getElementById('disb-payload').textContent =
     JSON.stringify(d.disbursement || { status: 'no disbursement — declined' }, null, 2);
 
-  // Map
+  // Map + resolved location
   const { latitude, longitude } = d.coordinates;
   map.setView([latitude, longitude], 9);
   marker.setLatLng([latitude, longitude]);
+  const place = d.location ? `<strong>${d.location}</strong> · ` : '';
+  const src = d.geocode_source ? ` <span class="badge green">${d.geocode_source}</span>` : '';
+  document.getElementById('geo-resolved').innerHTML =
+    `${place}${latitude.toFixed(4)}, ${longitude.toFixed(4)}${src}`;
+  marker.bindPopup(`${d.location || 'Farm'}<br>${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
 }
+
+// Populate the town autocomplete from the gazetteer.
+fetch('/api/v1/locations').then(r => r.json()).then(({ data }) => {
+  document.getElementById('location-list').innerHTML =
+    data.map(n => `<option value="${n}">`).join('');
+}).catch(() => {});
 
 async function submitScore() {
   const fd = new FormData(form);
   const payload = {
     farmer_id: fd.get('farmer_id'),
-    latitude: parseFloat(fd.get('latitude')),
-    longitude: parseFloat(fd.get('longitude')),
     monthly_coop_revenue_ksh: parseFloat(fd.get('monthly_coop_revenue_ksh')),
     requested_loan_amount: parseFloat(fd.get('requested_loan_amount')),
   };
+  // Coordinates (advanced) take precedence; otherwise resolve the town name.
+  const lat = fd.get('latitude'), lon = fd.get('longitude');
+  if (lat && lon) {
+    payload.latitude = parseFloat(lat);
+    payload.longitude = parseFloat(lon);
+  } else if (fd.get('location')) {
+    payload.location = fd.get('location');
+  } else {
+    alert('Enter a town/location or exact coordinates.');
+    return;
+  }
   const asset = fd.get('requested_asset_id');
   if (asset) payload.requested_asset_id = asset;
 

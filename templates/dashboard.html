@@ -99,7 +99,7 @@ async function refresh() {
       return `<tr>
         <td><div class="farmer-cell"><span class="av">${initials}</span>
             <div><div style="font-weight:600">${e.farmer_id}</div>
-            <div style="font-size:11px;color:var(--ink-300)">${e.lat.toFixed(3)}, ${e.lon.toFixed(3)}</div></div></div></td>
+            <div style="font-size:11px;color:var(--ink-300)">${e.location ? e.location + ' · ' : ''}${e.lat.toFixed(3)}, ${e.lon.toFixed(3)}</div></div></div></td>
         <td><strong>${e.score}</strong>${e.drought ? ' <span class="badge red">drought</span>' : ''}</td>
         <td>${e.asset_name || '—'}${upgrade}</td>
         <td>${fmtKsh(e.approved_amount)}</td>

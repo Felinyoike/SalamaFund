@@ -37,7 +37,9 @@ except ImportError:
 from scoring_engine import (
     score_and_disburse,
     validate_payload,
+    geocode_location,
     ASSET_MITIGATION_MATRIX,
+    KENYA_LOCATIONS,
     TIER_LIMITS,
     EE_STATUS,
 )
@@ -89,6 +91,24 @@ def assets_route():
         for aid, meta in ASSET_MITIGATION_MATRIX.items()
     ]
     return jsonify({"status": "success", "data": assets}), 200
+
+
+@app.route("/api/v1/locations", methods=["GET"])
+def locations_route():
+    """Curated Kenyan town/county gazetteer (powers the location autocomplete)."""
+    names = sorted({k.title() for k in KENYA_LOCATIONS})
+    return jsonify({"status": "success", "data": names}), 200
+
+
+@app.route("/api/v1/geocode", methods=["GET"])
+def geocode_route():
+    """Resolve a place name to coordinates (preview without scoring)."""
+    query = request.args.get("q", "")
+    geo = geocode_location(query)
+    if geo is None:
+        return jsonify({"status": "error",
+                        "message": f"Could not resolve '{query}'."}), 404
+    return jsonify({"status": "success", "data": geo}), 200
 
 
 @app.route("/api/v1/stream", methods=["GET"])
@@ -146,6 +166,7 @@ def _summarize(decision: dict) -> dict:
     """Flatten a full decision into the compact shape the dashboard consumes."""
     return {
         "farmer_id": decision["farmer_id"],
+        "location": decision.get("location"),
         "score": decision["climate_credit_score"],
         "tier": decision["risk_tier"],
         "requested": decision["requested_loan_amount_ksh"],

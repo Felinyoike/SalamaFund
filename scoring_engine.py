@@ -84,12 +84,19 @@ SCORE_MAX = 850
 # Revenue (KSh/month) that saturates the financial capacity component.
 REVENUE_SATURATION_KSH = 150_000.0
 
-# Disbursement ceilings by risk tier.
-TIER_LIMITS = {
-    "LOW": 150_000.0,
-    "MODERATE": 75_000.0,
-    "HIGH": 25_000.0,
-}
+# Risk tiers as (label, score_low, score_high, loan_floor, loan_ceiling).
+# The max loan scales *continuously* with the score inside each band, so two
+# farmers in the same tier but with different scores receive different ceilings —
+# the limit is dynamic across the whole 300–850 range, not three flat buckets.
+# The ceiling of each band matches the spec (HIGH 25k, MODERATE 75k, LOW 150k).
+TIER_BANDS = [
+    ("HIGH",     300, 549,  10_000.0,  25_000.0),
+    ("MODERATE", 550, 699,  25_000.0,  75_000.0),
+    ("LOW",      700, 850,  75_000.0, 150_000.0),
+]
+
+# Tier ceilings (top of each band) — retained for reporting / health checks.
+TIER_LIMITS = {label: ceiling for label, _lo, _hi, _floor, ceiling in TIER_BANDS}
 
 # A symbolic green-tech vendor wallet that funds are routed to (B2B, never the
 # farmer's consumer wallet — this is what prevents cash diversion).
@@ -406,12 +413,23 @@ def _fuse_score(environmental: float, financial: float, buffer: float) -> int:
 
 
 def _tier_for_score(score: int) -> tuple[str, float]:
-    """Map a Climate Credit Score to its risk tier and max loan ceiling."""
-    if score >= 700:
-        return "LOW", TIER_LIMITS["LOW"]
-    if score >= 550:
-        return "MODERATE", TIER_LIMITS["MODERATE"]
-    return "HIGH", TIER_LIMITS["HIGH"]
+    """
+    Classify a score into its risk tier and compute its DYNAMIC max loan limit.
+
+    Within a band the limit is linearly interpolated between the band's floor and
+    ceiling, so the ceiling rises smoothly with the score: a 720 and an 820 are
+    both LOW risk yet qualify for different amounts. The result is rounded to the
+    nearest KSh 1,000 for clean disbursement figures, and the bands are
+    continuous at their boundaries (699→75k, 700→75k).
+    """
+    score = int(_clamp(score, SCORE_MIN, SCORE_MAX))
+    for label, low, high, floor, ceiling in TIER_BANDS:
+        if low <= score <= high:
+            fraction = (score - low) / (high - low)
+            limit = floor + fraction * (ceiling - floor)
+            return label, round(limit / 1000.0) * 1000.0
+    # Defensive fallback (clamp above makes this unreachable in practice).
+    return "HIGH", TIER_BANDS[0][3]
 
 
 def _build_disbursement_payload(farmer_id: str, approved_amount: float,
@@ -482,6 +500,8 @@ def score_and_disburse(payload: dict) -> dict:
 
     decision = {
         "farmer_id": farmer_id,
+        "location": payload.get("resolved_location") or payload.get("location"),
+        "geocode_source": payload.get("geocode_source"),
         "coordinates": {"latitude": latitude, "longitude": longitude},
         "climate_credit_score": score,
         "base_score_without_asset": base_score,
@@ -515,30 +535,141 @@ def score_and_disburse(payload: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Request validation
+# Geocoder — resolve a town / county name to coordinates
 # --------------------------------------------------------------------------- #
-
-REQUIRED_FIELDS = {
-    "farmer_id": str,
-    "latitude": (int, float),
-    "longitude": (int, float),
-    "requested_loan_amount": (int, float),
-    "monthly_coop_revenue_ksh": (int, float),
+# Field officers think in place names ("Narok", "Garissa"), not decimal degrees.
+# This curated gazetteer of Kenyan agricultural hubs & county headquarters lets
+# the API accept a `location` instead of raw GPS. Coordinates are (lat, lon).
+KENYA_LOCATIONS = {
+    # --- Rift Valley grain & dairy belt (generally well-watered) ---------- #
+    "nakuru": (-0.3031, 36.0800), "naivasha": (-0.7167, 36.4310),
+    "molo": (-0.2483, 35.7314), "eldoret": (0.5143, 35.2698),
+    "kitale": (1.0157, 35.0062), "kericho": (-0.3689, 35.2861),
+    "bomet": (-0.7813, 35.3416), "kapsabet": (0.2030, 35.1050),
+    "kabarnet": (0.4919, 35.7430), "narok": (-1.0783, 35.8714),
+    "nyahururu": (0.0333, 36.3667), "ol kalou": (-0.2761, 36.3781),
+    "kapenguria": (1.2389, 35.1119),
+    # --- Central highlands (coffee / horticulture) ----------------------- #
+    "nyeri": (-0.4211, 36.9514), "nanyuki": (0.0167, 37.0731),
+    "embu": (-0.5310, 37.4575), "muranga": (-0.7210, 37.1526),
+    "murang'a": (-0.7210, 37.1526), "thika": (-1.0333, 37.0693),
+    "kerugoya": (-0.4986, 37.2803), "kirinyaga": (-0.4986, 37.2803),
+    "meru": (0.0463, 37.6559), "chuka": (-0.3333, 37.6500),
+    "laikipia": (0.0167, 37.0731), "nyandarua": (-0.2761, 36.3781),
+    # --- Western & Nyanza (high rainfall) -------------------------------- #
+    "kisumu": (-0.0917, 34.7680), "kakamega": (0.2827, 34.7519),
+    "bungoma": (0.5635, 34.5606), "busia": (0.4347, 34.2422),
+    "siaya": (0.0607, 34.2881), "vihiga": (0.0667, 34.7222),
+    "kisii": (-0.6817, 34.7680), "migori": (-1.0634, 34.4731),
+    "homa bay": (-0.5273, 34.4571), "homabay": (-0.5273, 34.4571),
+    # --- ASAL / semi-arid & arid (drought-prone) ------------------------- #
+    "machakos": (-1.5177, 37.2634), "kitui": (-1.3667, 38.0106),
+    "makueni": (-1.7833, 37.6333), "wote": (-1.7833, 37.6333),
+    "garissa": (-0.4536, 39.6401), "isiolo": (0.3546, 37.5822),
+    "marsabit": (2.3284, 37.9899), "wajir": (1.7471, 40.0573),
+    "mandera": (3.9366, 41.8670), "lodwar": (3.1191, 35.5973),
+    "turkana": (3.1191, 35.5973),
+    # --- Coast --------------------------------------------------------- #
+    "mombasa": (-4.0435, 39.6682), "malindi": (-3.2192, 40.1169),
+    "kilifi": (-3.6305, 39.8499), "voi": (-3.3961, 38.5561),
+    "lamu": (-2.2717, 40.9020),
+    # --- Major urban references ----------------------------------------- #
+    "nairobi": (-1.2864, 36.8172),
 }
 
+
+def _normalize_place(name: str) -> str:
+    """Lowercase, trim, and drop a trailing 'county'/'town' qualifier."""
+    n = name.strip().lower()
+    for suffix in (" county", " town", " sub-county", " subcounty"):
+        if n.endswith(suffix):
+            n = n[: -len(suffix)].strip()
+    return n
+
+
+def _geocode_nominatim(name: str) -> dict | None:
+    """
+    Best-effort online geocode via OpenStreetMap Nominatim, scoped to Kenya.
+
+    Used only when the local gazetteer misses. Network failures, missing
+    `requests`, or empty results all return None so the caller can error
+    cleanly — the demo never hangs on this.
+    """
+    try:
+        import requests  # local import: optional dependency
+        resp = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": f"{name}, Kenya", "format": "json", "limit": 1},
+            headers={"User-Agent": "SalamaFund/1.0 (climate-credit-api)"},
+            timeout=4,
+        )
+        results = resp.json()
+        if results:
+            top = results[0]
+            return {
+                "latitude": round(float(top["lat"]), 4),
+                "longitude": round(float(top["lon"]), 4),
+                "resolved_name": top.get("display_name", name).split(",")[0],
+                "source": "nominatim",
+            }
+    except Exception as exc:
+        print(f"[SalamaFund] Nominatim geocode failed for '{name}': {exc}")
+    return None
+
+
+def geocode_location(name: str) -> dict | None:
+    """
+    Resolve a place name to coordinates.
+
+    Resolution order:
+        1. Exact match against the curated Kenyan gazetteer.
+        2. Prefix / substring match against the gazetteer.
+        3. Online Nominatim fallback (best effort).
+
+    Returns {latitude, longitude, resolved_name, source} or None if unresolved.
+    """
+    if not name or not name.strip():
+        return None
+    key = _normalize_place(name)
+
+    if key in KENYA_LOCATIONS:
+        lat, lon = KENYA_LOCATIONS[key]
+        return {"latitude": lat, "longitude": lon,
+                "resolved_name": key.title(), "source": "local"}
+
+    # Fuzzy: any gazetteer key that starts with / contains the query.
+    for place, (lat, lon) in KENYA_LOCATIONS.items():
+        if place.startswith(key) or key in place:
+            return {"latitude": lat, "longitude": lon,
+                    "resolved_name": place.title(), "source": "local-fuzzy"}
+
+    return _geocode_nominatim(name)
+
+
+# --------------------------------------------------------------------------- #
+# Request validation
+# --------------------------------------------------------------------------- #
 
 def validate_payload(data: dict | None) -> tuple[dict | None, str | None]:
     """
     Validate the incoming JSON payload for /api/v1/score-and-disburse.
 
-    Returns (cleaned_payload, None) on success or (None, error_message) on the
-    first validation failure.
+    Location may be supplied EITHER as explicit `latitude`/`longitude` OR as a
+    `location` place name (which is geocoded here). Returns (cleaned_payload,
+    None) on success or (None, error_message) on the first validation failure.
     """
     if not isinstance(data, dict):
         return None, "Request body must be a JSON object."
 
     cleaned: dict = {}
-    for field, expected_type in REQUIRED_FIELDS.items():
+
+    # --- Always-required scalar fields ----------------------------------- #
+    scalars = {
+        "farmer_id": str,
+        "requested_loan_amount": (int, float),
+        "monthly_coop_revenue_ksh": (int, float),
+    }
+    for field, expected_type in scalars.items():
         if field not in data or data[field] in (None, ""):
             return None, f"Missing required field: '{field}'."
         value = data[field]
@@ -546,17 +677,45 @@ def validate_payload(data: dict | None) -> tuple[dict | None, str | None]:
             return None, f"Field '{field}' must be of type {expected_type}."
         cleaned[field] = value
 
-    # Range sanity checks.
-    if not (-90.0 <= float(cleaned["latitude"]) <= 90.0):
-        return None, "latitude must be between -90 and 90."
-    if not (-180.0 <= float(cleaned["longitude"]) <= 180.0):
-        return None, "longitude must be between -180 and 180."
+    # --- Location: coordinates OR a place name --------------------------- #
+    has_coords = (data.get("latitude") not in (None, "")
+                  and data.get("longitude") not in (None, ""))
+    location_name = data.get("location")
+    has_location = isinstance(location_name, str) and location_name.strip() != ""
+
+    if has_coords:
+        lat, lon = data["latitude"], data["longitude"]
+        if isinstance(lat, bool) or isinstance(lon, bool) \
+                or not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            return None, "latitude and longitude must be numbers."
+        if not (-90.0 <= float(lat) <= 90.0):
+            return None, "latitude must be between -90 and 90."
+        if not (-180.0 <= float(lon) <= 180.0):
+            return None, "longitude must be between -180 and 180."
+        cleaned["latitude"], cleaned["longitude"] = lat, lon
+        if has_location:
+            cleaned["location"] = location_name.strip()
+    elif has_location:
+        geo = geocode_location(location_name)
+        if geo is None:
+            return None, (f"Could not resolve location '{location_name}'. "
+                          f"Try a Kenyan town/county name or supply coordinates.")
+        cleaned["latitude"] = geo["latitude"]
+        cleaned["longitude"] = geo["longitude"]
+        cleaned["location"] = location_name.strip()
+        cleaned["resolved_location"] = geo["resolved_name"]
+        cleaned["geocode_source"] = geo["source"]
+    else:
+        return None, ("Provide either 'latitude' and 'longitude', or a "
+                      "'location' place name.")
+
+    # --- Loan / revenue ranges ------------------------------------------- #
     if float(cleaned["requested_loan_amount"]) <= 0:
         return None, "requested_loan_amount must be positive."
     if float(cleaned["monthly_coop_revenue_ksh"]) < 0:
         return None, "monthly_coop_revenue_ksh cannot be negative."
 
-    # Optional asset id.
+    # --- Optional asset id ----------------------------------------------- #
     asset_id = data.get("requested_asset_id")
     if asset_id is not None:
         if not isinstance(asset_id, str):
