@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}SalamaFund{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="logo">SalamaFund</span>
+      <span class="sub">Partner Portal</span>
+    </div>
+    <nav class="nav">
+      <a href="{{ url_for('dashboard') }}" class="{{ 'active' if active=='dashboard' }}"><span class="ic">▦</span> Dashboard</a>
+      <a href="{{ url_for('assessment') }}" class="{{ 'active' if active=='assessment' }}"><span class="ic">◎</span> Risk Assessment</a>
+      <a href="{{ url_for('dashboard') }}#portfolio" class="{{ 'active' if active=='portfolio' }}"><span class="ic">▤</span> Portfolio</a>
+      <a href="{{ url_for('dashboard') }}#disbursements"><span class="ic">⇄</span> Disbursements</a>
+      <a href="{{ url_for('docs') }}" class="{{ 'active' if active=='docs' }}"><span class="ic">⚙</span> API Settings</a>
+      <div class="spacer"></div>
+      <div class="nav-section">Resources</div>
+      <a href="{{ url_for('docs') }}"><span class="ic">▢</span> Documentation</a>
+      <a href="{{ url_for('landing') }}"><span class="ic">⌂</span> Marketing Site</a>
+    </nav>
+  </aside>
+  <main class="main">
+    <div class="topbar">
+      <h1>{% block heading %}{% endblock %}</h1>
+      <div class="search">⌕&nbsp; Search portfolio, farmer ID…</div>
+      <div class="user">
+        <div style="text-align:right">
+          <div style="font-weight:700">Equity Bank Ltd</div>
+          <div style="font-size:11px;color:var(--ink-300)">Nairobi Hub</div>
+        </div>
+        <div class="avatar">EB</div>
+      </div>
+    </div>
+    <div class="content">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</div>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% set active = 'docs' %}
+{% block title %}API Docs · SalamaFund{% endblock %}
+{% block heading %}API Documentation{% endblock %}
+
+{% block content %}
+<div class="grid cols-2">
+  <div class="card">
+    <span class="badge green">POST</span>
+    <h3 style="margin-top:10px">/api/v1/score-and-disburse</h3>
+    <p class="muted">Calculates the Climate Credit Score from satellite climate data and
+      cooperative revenue, then returns a risk-tiered disbursement decision.</p>
+
+    <h4 style="font-size:13px;margin:18px 0 8px">Request Parameters</h4>
+    <div class="kv"><span class="k mono">farmer_id <em>· string</em></span><span class="badge green">required</span></div>
+    <div class="kv"><span class="k mono">latitude <em>· float</em></span><span class="badge green">required</span></div>
+    <div class="kv"><span class="k mono">longitude <em>· float</em></span><span class="badge green">required</span></div>
+    <div class="kv"><span class="k mono">requested_loan_amount <em>· float</em></span><span class="badge green">required</span></div>
+    <div class="kv"><span class="k mono">monthly_coop_revenue_ksh <em>· float</em></span><span class="badge green">required</span></div>
+    <div class="kv"><span class="k mono">requested_asset_id <em>· string</em></span><span class="badge amber">optional</span></div>
+
+    <h4 style="font-size:13px;margin:18px 0 8px">Scoring Model</h4>
+    <p class="muted">Climate Credit Score (300–850) = mapped sum of three layers:</p>
+    <div class="kv"><span class="k">Environmental Resilience (CHIRPS SPI + MODIS NDVI)</span><span class="v">0–300</span></div>
+    <div class="kv"><span class="k">Financial Capacity (revenue + velocity)</span><span class="v">0–350</span></div>
+    <div class="kv"><span class="k">Asset Mitigation Buffer</span><span class="v">0–150</span></div>
+    <h4 style="font-size:13px;margin:18px 0 8px">Disbursement Tiers</h4>
+    <div class="kv"><span class="k">≥ 700 · Low Risk</span><span class="v">KSh 150,000</span></div>
+    <div class="kv"><span class="k">550–699 · Moderate</span><span class="v">KSh 75,000</span></div>
+    <div class="kv"><span class="k">&lt; 550 · High Risk</span><span class="v">KSh 25,000</span></div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h3>Example Request</h3>
+      <div class="codeblock">curl -X POST http://localhost:5000/api/v1/score-and-disburse \
+  -H "Content-Type: application/json" \
+  -d '{
+    "farmer_id": "FARM-NRK-0192",
+    "latitude": -0.3031,
+    "longitude": 36.0662,
+    "monthly_coop_revenue_ksh": 45000,
+    "requested_loan_amount": 90000,
+    "requested_asset_id": "ASSET-SOLAR-PUMP-04"
+  }'</div>
+    </div>
+    <div class="card" style="margin-top:18px">
+      <h3>Example Response <span class="badge green"><span class="dot"></span>200</span></h3>
+      <div class="codeblock">{
+  "status": "success",
+  "data": {
+    "climate_credit_score": 712,
+    "risk_tier": "LOW",
+    "max_loan_limit_ksh": 150000,
+    "approved": true,
+    "approved_amount_ksh": 90000,
+    "tier_upgraded_by_asset": true,
+    "components": {
+      "environmental_resilience": 96.4,
+      "financial_capacity": 210.3,
+      "asset_buffer": 142.5
+    },
+    "disbursement": {
+      "rail": "B2B_MERCHANT_SETTLEMENT",
+      "consumer_wallet_bypassed": true,
+      "payee": { "vendor": "SunCulture Kenya Ltd" }
+    }
+  }
+}</div>
+    </div>
+    <div class="card" style="margin-top:18px">
+      <h3>Other Endpoints</h3>
+      <div class="kv"><span class="k mono">GET /api/v1/assets</span><span class="v">Asset matrix</span></div>
+      <div class="kv"><span class="k mono">GET /api/v1/stream</span><span class="v">Live events</span></div>
+      <div class="kv"><span class="k mono">GET /api/v1/health</span><span class="v">EE status</span></div>
+    </div>
+  </div>
+</div>
+{% endblock %}

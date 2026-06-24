@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% set active = 'dashboard' %}
+{% block title %}Overview · SalamaFund{% endblock %}
+{% block heading %}Overview{% endblock %}
+
+{% block content %}
+<div class="grid cols-4" style="margin-bottom:18px">
+  <div class="card stat">
+    <div class="label"><span class="ic-badge">▦</span> Total Disbursed <span class="delta badge green" id="kpi-delta">live</span></div>
+    <div class="value" id="kpi-disbursed">KSh 0</div>
+  </div>
+  <div class="card stat">
+    <div class="label"><span class="ic-badge">★</span> Avg. Climate Score</div>
+    <div class="value" id="kpi-score">—</div>
+  </div>
+  <div class="card stat">
+    <div class="label"><span class="ic-badge">✓</span> Approval Rate</div>
+    <div class="value" id="kpi-approval">0%</div>
+  </div>
+  <div class="card stat">
+    <div class="label"><span class="ic-badge">◷</span> Active Loans</div>
+    <div class="value" id="kpi-active">0</div>
+  </div>
+</div>
+
+<div class="grid cols-3" style="margin-bottom:18px">
+  <div class="card span-2">
+    <h3>Disbursement Growth</h3>
+    <p class="muted">Monthly lending volume performance</p>
+    <div class="bars">
+      {% set heights = [40, 55, 48, 70, 62, 80, 75, 95, 88, 100, 92, 85] %}
+      {% for h in heights %}
+        <div class="bar {{ 'peak' if h == 100 }}" style="height: {{ h }}%"></div>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="card">
+    <h3>Tech Portfolio</h3>
+    <p class="muted">Distribution by asset type</p>
+    <div style="text-align:center;margin:14px 0">
+      <div style="font-size:40px;font-weight:800;letter-spacing:-1px" id="portfolio-count">128</div>
+      <div style="font-size:11px;color:var(--ink-300);letter-spacing:1px">ASSETS</div>
+    </div>
+    <div class="legend">
+      <div class="item"><span><span class="swatch" style="background:var(--green-900)"></span>Solar Pump Kits</span><strong>58%</strong></div>
+      <div class="item"><span><span class="swatch" style="background:var(--mint-400)"></span>Drip Irrigation</span><strong>24%</strong></div>
+      <div class="item"><span><span class="swatch" style="background:var(--mint-300)"></span>Water / Biogas</span><strong>18%</strong></div>
+    </div>
+  </div>
+</div>
+
+<div class="card" id="disbursements">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <h3>Recent Applications</h3>
+      <p class="muted">Streaming live from <span class="mono">/api/v1/score-and-disburse</span>
+        · Climate data: <span class="badge {{ 'green' if ee_status=='live' else 'amber' }}">{{ ee_status }}</span></p>
+    </div>
+    <a href="{{ url_for('assessment') }}" class="btn ghost">+ New Assessment</a>
+  </div>
+  <table>
+    <thead>
+      <tr><th>Farmer</th><th>Climate Score</th><th>Requested Tech</th><th>Amount</th><th>Status</th></tr>
+    </thead>
+    <tbody id="apps-body">
+      <tr><td colspan="5" class="empty">No applications yet — submit one from the Risk Assessment console.</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const fmtKsh = n => 'KSh ' + Math.round(n).toLocaleString();
+
+function tierBadge(tier, approved) {
+  if (!approved) return '<span class="badge red"><span class="dot"></span>Declined</span>';
+  const map = { LOW: 'green', MODERATE: 'amber', HIGH: 'red' };
+  const label = { LOW: 'Low Risk', MODERATE: 'Moderate', HIGH: 'High Risk' };
+  return `<span class="badge ${map[tier]}"><span class="dot"></span>${label[tier]}</span>`;
+}
+
+async function refresh() {
+  try {
+    const res = await fetch('/api/v1/stream');
+    const { data } = await res.json();
+    const a = data.aggregates;
+    document.getElementById('kpi-disbursed').textContent = fmtKsh(a.total_disbursed);
+    document.getElementById('kpi-score').textContent = a.avg_score || '—';
+    document.getElementById('kpi-approval').textContent = a.approval_rate + '%';
+    document.getElementById('kpi-active').textContent = a.active_loans;
+    document.getElementById('portfolio-count').textContent = 128 + a.active_loans;
+
+    const body = document.getElementById('apps-body');
+    if (!data.events.length) return;
+    body.innerHTML = data.events.map(e => {
+      const initials = e.farmer_id.replace(/[^A-Za-z0-9]/g,'').slice(0,2).toUpperCase();
+      const upgrade = e.tier_upgraded ? ' <span class="badge dark">↑ asset upgrade</span>' : '';
+      return `<tr>
+        <td><div class="farmer-cell"><span class="av">${initials}</span>
+            <div><div style="font-weight:600">${e.farmer_id}</div>
+            <div style="font-size:11px;color:var(--ink-300)">${e.lat.toFixed(3)}, ${e.lon.toFixed(3)}</div></div></div></td>
+        <td><strong>${e.score}</strong>${e.drought ? ' <span class="badge red">drought</span>' : ''}</td>
+        <td>${e.asset_name || '—'}${upgrade}</td>
+        <td>${fmtKsh(e.approved_amount)}</td>
+        <td>${tierBadge(e.tier, e.approved)}</td>
+      </tr>`;
+    }).join('');
+  } catch (err) { /* keep last good state */ }
+}
+refresh();
+setInterval(refresh, 4000);
+</script>
+{% endblock %}

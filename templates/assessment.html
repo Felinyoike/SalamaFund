@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+{% set active = 'assessment' %}
+{% block title %}Risk Assessment · SalamaFund{% endblock %}
+{% block heading %}Risk Assessment Console{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="grid cols-3">
+  <!-- ---------------------------- Input panel ---------------------------- -->
+  <div class="card">
+    <h3>New Application</h3>
+    <p class="muted">Score a farmer against live climate exposure</p>
+    <form id="score-form">
+      <div class="field">
+        <label>Farmer / Cooperative ID</label>
+        <input name="farmer_id" value="FARM-NRK-0192" required>
+      </div>
+      <div class="row">
+        <div class="field"><label>Latitude</label>
+          <input name="latitude" type="number" step="any" value="-0.3031" required></div>
+        <div class="field"><label>Longitude</label>
+          <input name="longitude" type="number" step="any" value="36.0662" required></div>
+      </div>
+      <div class="field">
+        <label>Monthly Co-op Revenue (KSh)</label>
+        <input name="monthly_coop_revenue_ksh" type="number" step="any" value="45000" required>
+      </div>
+      <div class="field">
+        <label>Requested Loan (KSh)</label>
+        <input name="requested_loan_amount" type="number" step="any" value="90000" required>
+      </div>
+      <div class="field">
+        <label>Green-Tech Asset (mitigation)</label>
+        <select name="requested_asset_id">
+          <option value="">— None (cash-flow loan) —</option>
+          {% for aid, meta in assets %}
+            <option value="{{ aid }}">{{ meta.name }} (+{{ meta.buffer }} max)</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button class="btn block" type="submit">Score &amp; Disburse</button>
+      <p class="muted" style="margin-top:10px">Climate engine:
+        <span class="badge {{ 'green' if ee_status=='live' else 'amber' }}">{{ ee_status }}</span></p>
+    </form>
+  </div>
+
+  <!-- ---------------------------- Score panel ---------------------------- -->
+  <div class="card dark" style="display:flex;flex-direction:column;justify-content:space-between">
+    <div>
+      <p class="muted">SALAMASCORE™ CLIMATE CREDIT RATING</p>
+      <div class="score-big" id="score">—</div>
+      <div class="score-sub" id="tier-label">Awaiting assessment</div>
+    </div>
+    <div style="margin-top:20px">
+      <div class="kv" style="border-color:rgba(255,255,255,.12)">
+        <span class="k" style="color:rgba(255,255,255,.6)">Max Loan Limit</span>
+        <span class="v" id="max-loan">—</span>
+      </div>
+      <div class="kv" style="border-color:rgba(255,255,255,.12)">
+        <span class="k" style="color:rgba(255,255,255,.6)">Approved Amount</span>
+        <span class="v" id="approved-amount">—</span>
+      </div>
+      <div id="upgrade-note" style="display:none;margin-top:12px">
+        <span class="badge dark">↑ Asset buffer upgraded tier from <span id="base-tier"></span></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ----------------------------- Map panel ----------------------------- -->
+  <div class="card">
+    <h3>Geolocation</h3>
+    <p class="muted">CHIRPS / MODIS sampling point</p>
+    <div id="map"></div>
+  </div>
+</div>
+
+<!-- --------------------------- Diagnostics row --------------------------- -->
+<div class="grid cols-3" style="margin-top:18px">
+  <div class="card">
+    <h3>Climate Risk Factors</h3>
+    <p class="muted">CHIRPS precipitation anomaly &amp; NDVI retention</p>
+    <div class="kv"><span class="k">Std. Precipitation Anomaly (SPI)</span><span class="v" id="spi">—</span></div>
+    <div class="kv"><span class="k">Drought Exposure (SPI ≤ -1.5)</span><span class="v" id="drought">—</span></div>
+    <div class="kv"><span class="k">NDVI Dry-Month Variance</span><span class="v" id="ndvi">—</span></div>
+    <label style="margin-top:14px">Environmental Resilience (0–300)</label>
+    <div class="meter"><span id="env-meter" style="width:0%"></span></div>
+    <span class="muted" id="env-val">0 pts</span>
+  </div>
+
+  <div class="card">
+    <h3>Score Composition</h3>
+    <p class="muted">How the 300–850 score is built</p>
+    <label>Environmental Resilience</label>
+    <div class="meter"><span id="bar-env" style="width:0%"></span></div>
+    <label style="margin-top:12px">Financial Capacity</label>
+    <div class="meter"><span id="bar-fin" style="width:0%;background:var(--mint-400)"></span></div>
+    <label style="margin-top:12px">Asset Mitigation Buffer</label>
+    <div class="meter"><span id="bar-asset" style="width:0%;background:var(--green-900)"></span></div>
+    <div class="kv" style="margin-top:14px"><span class="k">Composition total</span><span class="v" id="comp-total">—</span></div>
+  </div>
+
+  <div class="card">
+    <h3>B2B Disbursement</h3>
+    <p class="muted">Anti-diversion vendor settlement payload</p>
+    <div class="codeblock" id="disb-payload">{
+  "status": "awaiting score…"
+}</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const fmtKsh = n => 'KSh ' + Math.round(n).toLocaleString();
+const TIER_TEXT = { LOW: 'Low Risk · High Trust Tier', MODERATE: 'Moderate Risk Tier', HIGH: 'High Risk Tier' };
+
+// --- Leaflet map ----------------------------------------------------------
+const map = L.map('map').setView([-0.3031, 36.0662], 7);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+  { maxZoom: 18, attribution: '© OpenStreetMap' }).addTo(map);
+let marker = L.marker([-0.3031, 36.0662]).addTo(map);
+
+const form = document.getElementById('score-form');
+
+function setBar(id, value, max) {
+  document.getElementById(id).style.width = Math.min(100, (value / max) * 100) + '%';
+}
+
+function render(d) {
+  document.getElementById('score').textContent = d.climate_credit_score;
+  document.getElementById('tier-label').textContent =
+    (d.approved ? '✓ ' : '✕ ') + TIER_TEXT[d.risk_tier];
+  document.getElementById('max-loan').textContent = fmtKsh(d.max_loan_limit_ksh);
+  document.getElementById('approved-amount').textContent =
+    d.approved ? fmtKsh(d.approved_amount_ksh) : 'Declined — over limit';
+
+  const up = document.getElementById('upgrade-note');
+  if (d.tier_upgraded_by_asset) {
+    up.style.display = 'block';
+    document.getElementById('base-tier').textContent = d.base_risk_tier;
+  } else { up.style.display = 'none'; }
+
+  // Climate diagnostics
+  const env = d.environmental;
+  document.getElementById('spi').textContent = env.spi_anomaly;
+  document.getElementById('drought').innerHTML = env.drought_exposure
+    ? '<span class="badge red">High</span>' : '<span class="badge green">Normal</span>';
+  document.getElementById('ndvi').textContent = env.ndvi_dry_variance;
+  setBar('env-meter', env.environmental_resilience, 300);
+  document.getElementById('env-val').textContent = env.environmental_resilience + ' / 300 pts';
+
+  // Composition
+  const c = d.components;
+  setBar('bar-env', c.environmental_resilience, 300);
+  setBar('bar-fin', c.financial_capacity, 350);
+  setBar('bar-asset', c.asset_buffer, 150);
+  document.getElementById('comp-total').textContent =
+    (c.environmental_resilience + c.financial_capacity + c.asset_buffer).toFixed(1) + ' pts';
+
+  // Disbursement payload
+  document.getElementById('disb-payload').textContent =
+    JSON.stringify(d.disbursement || { status: 'no disbursement — declined' }, null, 2);
+
+  // Map
+  const { latitude, longitude } = d.coordinates;
+  map.setView([latitude, longitude], 9);
+  marker.setLatLng([latitude, longitude]);
+}
+
+async function submitScore() {
+  const fd = new FormData(form);
+  const payload = {
+    farmer_id: fd.get('farmer_id'),
+    latitude: parseFloat(fd.get('latitude')),
+    longitude: parseFloat(fd.get('longitude')),
+    monthly_coop_revenue_ksh: parseFloat(fd.get('monthly_coop_revenue_ksh')),
+    requested_loan_amount: parseFloat(fd.get('requested_loan_amount')),
+  };
+  const asset = fd.get('requested_asset_id');
+  if (asset) payload.requested_asset_id = asset;
+
+  const res = await fetch('/api/v1/score-and-disburse', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const json = await res.json();
+  if (json.status === 'success') render(json.data);
+  else alert(json.message);
+}
+
+form.addEventListener('submit', e => { e.preventDefault(); submitScore(); });
+// Re-score instantly whenever the asset is changed — shows the limit shift live.
+form.querySelector('[name=requested_asset_id]').addEventListener('change', submitScore);
+// Initial score on load.
+submitScore();
+</script>
+{% endblock %}
